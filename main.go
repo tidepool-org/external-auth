@@ -7,13 +7,13 @@ import (
 	"net"
 	"os"
 
+	jwt "github.com/dgrijalva/jwt-go"
 	core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	auth "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
 	envoy_type "github.com/envoyproxy/go-control-plane/envoy/type"
 	"github.com/gogo/googleapis/google/rpc"
+	xstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
-
-	jwt "github.com/dgrijalva/jwt-go"
 )
 
 const (
@@ -30,6 +30,7 @@ var (
 )
 
 type (
+	// Session describes a authenticated session
 	Session struct {
 		ID        string `json:"-" bson:"_id"`
 		IsServer  bool   `json:"isServer" bson:"isServer"`
@@ -47,7 +48,7 @@ type (
 	}
 )
 
-//UnpackSessionTokenAndVerify unpacks a session token and verifies it signature
+// UnpackSessionTokenAndVerify unpacks a session token and verifies it signature
 func (a *AuthorizationServer) UnpackSessionTokenAndVerify(id string) (*Session, error) {
 
 	session := &Session{}
@@ -91,13 +92,17 @@ func (a *AuthorizationServer) UnpackSessionTokenAndVerify(id string) (*Session, 
 	return session, nil
 }
 
-// Check injects a header that can be used for future rate limiting
+// Check verifies the identity of the requestor and places that identity in various headers.
+// If no identity is claimed, then it injects the "x-ext-auth-unauthenticated" header
+// If an identity is claimed, but the cannot be verfied, then it injects the fails the request
+// If an identity is claimed and is a server, then it injects the "x-ext-auth-server" header
+// If an identity is claimed and is a user, then it injects the "x-ext-auth-userid" header with the userid as the value
 func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest) (*auth.CheckResponse, error) {
 	authHeader, ok := req.Attributes.Request.Http.Headers[SessionTokenHeader]
 
 	if !ok {
 		return &auth.CheckResponse{
-			Status: &rpc.Status{
+			Status: &xstatus.Status{
 				Code: int32(rpc.OK),
 			},
 			HttpResponse: &auth.CheckResponse_OkResponse{
@@ -115,11 +120,11 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 		}, nil
 	}
 
-	session, err := UnpackSessionTokenAndVerify(authHeader)
+	session, err := a.UnpackSessionTokenAndVerify(authHeader)
 
 	if err != nil {
 		return &auth.CheckResponse{
-			Status: &rpc.Status{
+			Status: &xstatus.Status{
 				Code: int32(rpc.UNAUTHENTICATED),
 			},
 			HttpResponse: &auth.CheckResponse_DeniedResponse{
@@ -135,7 +140,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 
 	if session.IsServer {
 		return &auth.CheckResponse{
-			Status: &rpc.Status{
+			Status: &xstatus.Status{
 				Code: int32(rpc.OK),
 			},
 			HttpResponse: &auth.CheckResponse_OkResponse{
@@ -154,7 +159,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 	}
 
 	return &auth.CheckResponse{
-		Status: &rpc.Status{
+		Status: &xstatus.Status{
 			Code: int32(rpc.OK),
 		},
 		HttpResponse: &auth.CheckResponse_OkResponse{
