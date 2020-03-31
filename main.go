@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
+	"os"
 
-	"github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
+	core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	auth "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
 	envoy_type "github.com/envoyproxy/go-control-plane/envoy/type"
 	"github.com/gogo/googleapis/google/rpc"
@@ -19,12 +21,24 @@ const (
 	SessionTokenHeader = "x-tidepool-session-token"
 )
 
+var (
+	// ErrNoUserID is provided if there is no user id
+	ErrNoUserID = errors.New("Session token is empty")
+
+	// ErrInvalid means that the session token is invalid
+	ErrInvalid = errors.New("Session token is invalid")
+)
+
 type (
-	// TokenData stores the decrypted token data
-	TokenData struct {
-		IsServer     bool   `json:"isserver"`
-		UserID       string `json:"userid"`
-		DurationSecs int64  `json:"-"`
+	Session struct {
+		ID        string `json:"-" bson:"_id"`
+		IsServer  bool   `json:"isServer" bson:"isServer"`
+		ServerID  string `json:"-" bson:"serverId,omitempty"`
+		UserID    string `json:"userId,omitempty" bson:"userId,omitempty"`
+		Duration  int64  `json:"-" bson:"duration"`
+		ExpiresAt int64  `json:"-" bson:"expiresAt"`
+		CreatedAt int64  `json:"-" bson:"createdAt"`
+		Time      int64  `json:"-" bson:"time"`
 	}
 
 	// AuthorizationServer is the authorization server
@@ -34,37 +48,54 @@ type (
 )
 
 //UnpackSessionTokenAndVerify unpacks a session token and verifies it signature
-func (a *AuthorizationServer) UnpackSessionTokenAndVerify(id string) (*TokenData, error) {
+func (a *AuthorizationServer) UnpackSessionTokenAndVerify(id string) (*Session, error) {
+
+	session := &Session{}
+
 	if id == "" {
-		return nil, ErrorNoUserID
+		return nil, ErrNoUserID
 	}
 
-	jwtToken, err := jwt.Parse(id, func(t *jwt.Token) ([]byte, error) { return []byte(a.Secret), nil })
+	parsedClaims := struct {
+		jwt.StandardClaims
+		IsServer string  `json:"svr"`
+		UserID   string  `json:"usr"`
+		Duration float64 `json:"dur"`
+	}{}
+
+	keyFunc := func(token *jwt.Token) (interface{}, error) {
+		return []byte(a.Secret), nil
+	}
+
+	_, err := jwt.ParseWithClaims(session.ID, &parsedClaims, keyFunc)
 	if err != nil {
-		return nil, err
-	}
-	if !jwtToken.Valid {
-		return nil, Invalid
-	}
-
-	isServer := jwtToken.Claims["svr"] == "yes"
-	durationSecs, ok := jwtToken.Claims["dur"].(int64)
-	if !ok {
-		durationSecs = int64(jwtToken.Claims["dur"].(float64))
+		validationError, ok := err.(*jwt.ValidationError)
+		if !ok {
+			return nil, err
+		}
+		if validationError.Errors != jwt.ValidationErrorExpired {
+			return nil, validationError
+		}
 	}
 
-	return &TokenData{
-		IsServer:     isServer,
-		DurationSecs: durationSecs,
-		UserID:       userId,
-	}, nil
+	session.IsServer = parsedClaims.IsServer == "yes"
+	if session.IsServer {
+		session.ServerID = parsedClaims.UserID
+	} else {
+		session.UserID = parsedClaims.UserID
+	}
+	session.Duration = int64(parsedClaims.Duration)
+	session.ExpiresAt = parsedClaims.ExpiresAt
+
+	session.CreatedAt = session.Time
+	return session, nil
 }
 
 // Check injects a header that can be used for future rate limiting
 func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest) (*auth.CheckResponse, error) {
 	authHeader, ok := req.Attributes.Request.Http.Headers[SessionTokenHeader]
 
-	if ! ok {
+	if !ok {
 		return &auth.CheckResponse{
 			Status: &rpc.Status{
 				Code: int32(rpc.OK),
@@ -84,7 +115,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 		}, nil
 	}
 
-	tokenData, err := UnpackSessionTokenAndVerify(authHeader)
+	session, err := UnpackSessionTokenAndVerify(authHeader)
 
 	if err != nil {
 		return &auth.CheckResponse{
@@ -102,7 +133,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 		}, nil
 	}
 
-	if tokenData.IsServer {
+	if session.IsServer {
 		return &auth.CheckResponse{
 			Status: &rpc.Status{
 				Code: int32(rpc.OK),
@@ -113,7 +144,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 						{
 							Header: &core.HeaderValue{
 								Key:   "x-ext-auth-server",
-								Value: "true",
+								Value: session.ServerID,
 							},
 						},
 					},
@@ -132,7 +163,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 					{
 						Header: &core.HeaderValue{
 							Key:   "x-ext-auth-userid",
-							Value: tokenData.userId,
+							Value: session.UserID,
 						},
 					},
 				},
@@ -156,7 +187,7 @@ func main() {
 	log.Printf("listening on %s", lis.Addr())
 
 	grpcServer := grpc.NewServer()
-	authServer := &AuthorizationServer{ Secret: userSecret }
+	authServer := &AuthorizationServer{Secret: userSecret}
 	auth.RegisterAuthorizationServer(grpcServer, authServer)
 
 	if err := grpcServer.Serve(lis); err != nil {

@@ -1,0 +1,10 @@
+sudo: false
+
+language: go
+
+go:
+  - 1.14.1
+
+script:
+  - go build main.go
+  - ./artifact.sh
