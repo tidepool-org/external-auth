@@ -19,6 +19,15 @@ import (
 const (
 	// SessionTokenHeader is the key of the Tidepool session token header
 	SessionTokenHeader = "x-tidepool-session-token"
+
+	// UnauthenticatedUser is header used to identify a request from a user is not authenticated
+	UnauthenticatedUser = "x-ext-auth-unauthenticated-user"
+
+	// AuthenticatedServer is header used to identify a request from an authenticated server
+	AuthenticatedServer = "x-ext-auth-authenticated-server"
+
+	// AuthenticatedUser is header used to identify a request from an authenticated user
+	AuthenticatedUser = "x-ext-auth-authenticated-user"
 )
 
 var (
@@ -110,7 +119,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 					Headers: []*core.HeaderValueOption{
 						{
 							Header: &core.HeaderValue{
-								Key:   "x-ext-auth-unauthenticated",
+								Key: UnauthenticatedUser, 
 								Value: "true",
 							},
 						},
@@ -148,7 +157,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 					Headers: []*core.HeaderValueOption{
 						{
 							Header: &core.HeaderValue{
-								Key:   "x-ext-auth-server",
+								Key:   AuthenticatedServer,
 								Value: session.ServerID,
 							},
 						},
@@ -167,7 +176,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 				Headers: []*core.HeaderValueOption{
 					{
 						Header: &core.HeaderValue{
-							Key:   "x-ext-auth-userid",
+							Key: AuthenticatedUser,
 							Value: session.UserID,
 						},
 					},
