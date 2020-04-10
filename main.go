@@ -103,11 +103,12 @@ func (a *AuthorizationServer) UnpackSessionTokenAndVerify(id string) (*Session, 
 
 // Check verifies the identity of the requestor and places that identity in various headers.
 // If no identity is claimed, then it injects the "x-ext-auth-unauthenticated" header
-// If an identity is claimed, but the cannot be verfied, then it injects the fails the request
+// If an identity is claimed, but cannot be verfied, then it injects the fails the request
 // If an identity is claimed and is a server, then it injects the "x-ext-auth-server" header
 // If an identity is claimed and is a user, then it injects the "x-ext-auth-userid" header with the userid as the value
 func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest) (*auth.CheckResponse, error) {
 	authHeader, ok := req.Attributes.Request.Http.Headers[SessionTokenHeader]
+
 
 	if !ok {
 		return &auth.CheckResponse{
@@ -129,6 +130,7 @@ func (a *AuthorizationServer) Check(ctx context.Context, req *auth.CheckRequest)
 		}, nil
 	}
 
+	log.Printf("receive Check request for %v", authHeader)
 	session, err := a.UnpackSessionTokenAndVerify(authHeader)
 
 	if err != nil {
